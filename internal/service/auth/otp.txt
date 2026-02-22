@@ -1,0 +1,225 @@
+package auth
+
+import (
+	"context"
+	"core-be/internal/entity/auth/v2"
+	"core-be/internal/entity/core/v1"
+	"core-be/pkg/errors"
+	"crypto/rand"
+	"fmt"
+	mathRand "math/rand"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/dgrijalva/jwt-go"
+	"github.com/raja/argon2pw"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+)
+
+func (s Service) VerifyOTP(ctx context.Context, _nip, _otpCode string) (auth.Token, error) {
+	ctx, span := s.tracer.Start(
+		trace.ContextWithSpanContext(ctx, trace.SpanContextFromContext(ctx)),
+		"VerifyOTP",
+		trace.WithSpanKind(trace.SpanKindInternal),
+	)
+	span.SetAttributes(
+		attribute.String("data.nip", _nip),
+		attribute.String("data.otpCode", _otpCode),
+	)
+	defer span.End()
+
+	token := auth.Token{}
+
+	otp, err := s.data.GetOTP(ctx, _nip)
+	if err != nil {
+		return token, errors.Wrap(err, "[SERVICE][VerifyOTP]")
+	}
+
+	if time.Now().Local().After(otp.ExpiresAt) {
+		return token, errors.New("[SERVICE][VerifyOTP][OTP Expired]")
+	}
+
+	if otp.CodeOTP != _otpCode {
+		return token, errors.New("[SERVICE][VerifyOTP][Invalid OTP]")
+	}
+
+	t := time.Now()
+	d := 15 * time.Minute
+	e := t.Add(d)
+
+	// Set Header Token
+	sign := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iss": jwtApplicationName,
+		"sub": _nip,
+		"otp": _otpCode,
+		"nbf": t.Unix(),
+		"iat": t.Unix(),
+		"exp": e.Unix(),
+	})
+
+	jwtKeys := strings.Split(os.Getenv("OLD_JWT_KEYS"), ", ")
+	secret := jwtKeys[mathRand.Intn(len(jwtKeys))]
+	// Set Secret Key Token
+	accessToken, err := sign.SignedString([]byte(secret))
+	if err != nil {
+		return token, errors.Wrap(err, "[SERVICE][VerifyOTP]")
+	}
+
+	token = auth.Token{
+		AccessToken: accessToken,
+		ExpiresIn:   e.Unix() - t.Unix(),
+		ExpiresAt:   e.Unix(),
+		TokenType:   "Bearer",
+	}
+
+	return token, nil
+}
+
+func (s Service) ResetPassword(ctx context.Context, _verifyToken string, _user core.User) error {
+	ctx, span := s.tracer.Start(
+		trace.ContextWithSpanContext(ctx, trace.SpanContextFromContext(ctx)),
+		"ResetPassword",
+		trace.WithSpanKind(trace.SpanKindInternal),
+	)
+	span.SetAttributes(
+		attribute.String("data.user", fmt.Sprintf("%+v", _user)),
+		attribute.String("data.verifyToken", _verifyToken),
+	)
+	defer span.End()
+
+	var (
+		token *jwt.Token
+		err   error
+	)
+
+	jwtKeys := strings.Split(os.Getenv("OLD_JWT_KEYS"), ", ")
+	for i := 0; i < len(jwtKeys); i++ {
+		token, err = jwt.Parse(_verifyToken, func(token *jwt.Token) (interface{}, error) {
+			if method, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, errors.New("Signing method does not match")
+			} else if method != jwt.SigningMethodHS256 {
+				return nil, errors.New("Signing method does not match")
+			}
+
+			return []byte(jwtKeys[i]), nil
+		})
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return errors.Wrap(err, "[SERVICE][ResetPassword] 401 Unauthorized")
+	}
+
+	// Check Token
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || !token.Valid {
+		return errors.Wrap(err, "[SERVICE][ResetPassword] 401 Unauthorized")
+	}
+	if claims["sub"].(string) != _user.NIP {
+		return errors.New("[SERVICE][ResetPassword] Invalid Token")
+	}
+
+	// Hash Password
+	if _user.Password != "" {
+		hashedPassword, err := argon2pw.GenerateSaltedHash(_user.Password)
+		if err != nil {
+			return errors.Wrap(err, "[SERVICE][EditUser]")
+		}
+
+		_user.Password = hashedPassword
+	}
+
+	err = s.core.ChangePassword(ctx, _user.NIP, _user.Password)
+	if err != nil {
+		return errors.Wrap(err, "[SERVICE][ResetPassword]")
+	}
+
+	return nil
+}
+
+func (s Service) SendOTP(ctx context.Context, _phoneNumber string) (map[string]interface{}, error) {
+	ctx, span := s.tracer.Start(
+		trace.ContextWithSpanContext(ctx, trace.SpanContextFromContext(ctx)),
+		"SendOTP",
+		trace.WithSpanKind(trace.SpanKindInternal),
+	)
+	span.SetAttributes(
+		attribute.String("data.phoneNumber", _phoneNumber),
+	)
+	defer span.End()
+
+	user, err := s.core.GetUserByPhoneNumber(ctx, _phoneNumber)
+	if err != nil {
+		return nil, errors.Wrap(err, "[SERVICE][SendOTP][Invalid Phone Number]")
+	}
+
+	if strings.ToUpper(user.IsActive) != "Y" {
+		return nil, errors.Wrap(errors.New("user is not active"), "[SERVICE][SendOTP]")
+	}
+
+	otp := auth.OTP{}
+	otp.NIP = user.NIP
+	otp.ExpiresAt = time.Now().Add(time.Minute * 5)
+
+	otp.CodeOTP, err = GenerateNumber(6)
+	if err != nil {
+		return nil, errors.Wrap(err, "[SERVICE][SendOTP]")
+	}
+
+	err = s.data.DeleteOTP(ctx, user.NIP)
+	if err != nil {
+		return nil, errors.Wrap(err, "[SERVICE][SendOTP]")
+	}
+
+	err = s.data.CreateOTP(ctx, otp)
+	if err != nil {
+		return nil, errors.Wrap(err, "[SERVICE][SendOTP]")
+	}
+
+	err = s.chatWA.SendOTP(ctx, auth.SendOTPRequest{
+		PhoneNumber: strings.Replace(_phoneNumber, "0", "+62", 1),
+		PhoneName:   user.Name,
+		TemplateID:  "83369632-b617-4556-bd8e-88ce4dfc74c8",
+		Body: []auth.SendOTPBody{
+			{
+				Key:       "1",
+				Value:     "otp",
+				ValueText: otp.CodeOTP,
+			},
+		},
+		Buttons: []auth.SendOTPButtons{
+			{
+				Index: "0",
+				Type:  "url",
+				Value: otp.CodeOTP,
+			},
+		},
+	})
+	if err != nil {
+		return nil, errors.Wrap(err, "[SERVICE][ChatWA][SendOTP]")
+	}
+
+	result := map[string]interface{}{
+		"nip": user.NIP,
+	}
+
+	return result, nil
+}
+
+func GenerateNumber(length int) (string, error) {
+	const otpChars = "1234567890"
+	buffer := make([]byte, length)
+	_, err := rand.Read(buffer)
+	if err != nil {
+		return "", err
+	}
+
+	otpCharsLength := len(otpChars)
+	for i := 0; i < length; i++ {
+		buffer[i] = otpChars[int(buffer[i])%otpCharsLength]
+	}
+	return string(buffer), nil
+}

@@ -1,0 +1,60 @@
+package auth
+
+import (
+	"context"
+	"core-be/internal/entity/auth/v2"
+	"core-be/internal/entity/core/v1"
+
+	"github.com/casbin/casbin/v2"
+
+	logger "core-be/pkg/log"
+
+	"go.opentelemetry.io/otel/trace"
+)
+
+type Data interface {
+	// OTP
+	GetOTP(ctx context.Context, _nip string) (auth.OTP, error)
+	CreateOTP(ctx context.Context, otp auth.OTP) error
+	DeleteOTP(ctx context.Context, _nip string) error
+
+	// JWT
+	RotateJWTKeys(ctx context.Context, jwtKeys []string) error
+	DeleteJWTKeys(ctx context.Context, jwtKeys []string) error
+}
+
+type CoreService interface {
+	GetUserByNIP(ctx context.Context, _nip string) (core.User, error)
+	GetUserPTByNIP(ctx context.Context, _nip string) ([]core.UserPT, error)
+	GetUserByPhoneNumber(ctx context.Context, _phoneNumber string) (core.User, error)
+	GetUserRoleByApp(ctx context.Context, _pt, _app int, _nip string) ([]core.UserRole, error)
+	GetPasswordByNIP(ctx context.Context, _nip string) (string, error)
+	GetAccessListByAppUser(ctx context.Context, _nip string, _pt, _app int, _role []int) (map[string][]string, error)
+	UpdateLastLogin(ctx context.Context, _user core.User) error
+	ChangePassword(ctx context.Context, _nip, _password string) error
+	GetAppByID(ctx context.Context, _appID int) (core.App, error)
+}
+
+type ChatWAService interface {
+	SendOTP(ctx context.Context, request auth.SendOTPRequest) error
+}
+
+type Service struct {
+	data         Data
+	core         CoreService
+	chatWA       ChatWAService
+	tracer       trace.Tracer
+	log          logger.Logger
+	authEnforcer *casbin.Enforcer
+}
+
+func New(data Data, core CoreService, chatWA ChatWAService, tracer trace.Tracer, log logger.Logger, authEnforcer *casbin.Enforcer) *Service {
+	return &Service{
+		data:         data,
+		core:         core,
+		chatWA:       chatWA,
+		tracer:       tracer,
+		log:          log,
+		authEnforcer: authEnforcer,
+	}
+}

@@ -1,0 +1,726 @@
+package auth
+
+import (
+	"context"
+	"core-be/internal/entity/auth/v2"
+	"core-be/pkg/errors"
+	randCrypto "crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"log"
+	"math/rand"
+	"net/url"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/dgrijalva/jwt-go"
+	"github.com/raja/argon2pw"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+)
+
+var (
+	jwtApplicationName = "PHARMALINK-CORE"
+)
+
+func (s Service) Login(ctx context.Context, _nip, _password, _host string, _pt, _appID int) (auth.Token, map[string]interface{}, error) {
+	ctx, span := s.tracer.Start(
+		trace.ContextWithSpanContext(ctx, trace.SpanContextFromContext(ctx)),
+		"Login",
+		trace.WithSpanKind(trace.SpanKindInternal),
+	)
+	span.SetAttributes(
+		attribute.String("data.nip", _nip),
+		attribute.String("data.host", _host),
+		attribute.Int("data.pt", _pt),
+		attribute.Int("data.appID", _appID),
+	)
+	defer span.End()
+
+	token := auth.Token{}
+	metadata := make(map[string]interface{})
+
+	password, err := s.core.GetPasswordByNIP(ctx, _nip)
+	if err != nil {
+		return token, metadata, errors.Wrap(err, "[SERVICE][Login]")
+	}
+
+	user, err := s.core.GetUserByNIP(ctx, _nip)
+	if err != nil {
+		return token, metadata, errors.Wrap(err, "[SERVICE][Login]")
+	}
+
+	if user.IsActive == "N" {
+		return token, metadata, errors.Wrap(errors.New("user is inactive"), "[SERVICE][Login]")
+	}
+
+	valid, err := argon2pw.CompareHashWithPassword(password, _password)
+	if err != nil {
+		return token, metadata, errors.Wrap(err, "[SERVICE][Login]")
+	}
+
+	if !valid {
+		return token, metadata, errors.Wrap(errors.New("invalid password"), "[SERVICE][Login]")
+	}
+
+	t := time.Now()
+	d := 12 * time.Hour
+	e := t.Add(d)
+
+	jwtID, err := GenerateNumber(5)
+	if err != nil {
+		return token, metadata, errors.Wrap(err, "[SERVICE][Login]")
+	}
+
+	// Set Header Token
+	accessTokenSign := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iss":  jwtApplicationName,
+		"app":  _appID,
+		"nbf":  t.Unix(),
+		"iat":  t.Unix(),
+		"exp":  e.Unix(),
+		"jti":  jwtID,
+		"pt":   _pt,
+		"type": "AT",
+	})
+
+	refreshTokenSign := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iss":  jwtApplicationName,
+		"app":  _appID,
+		"nbf":  t.Unix(),
+		"iat":  t.Unix(),
+		"exp":  t.Add(72 * time.Hour).Unix(),
+		"jti":  jwtID,
+		"pt":   _pt,
+		"type": "RT",
+	})
+
+	jwtKeys := strings.Split(os.Getenv("NEW_JWT_KEYS"), ", ")
+	randKey := jwtKeys[rand.Intn(len(jwtKeys))]
+	concat := len(randKey) / 4
+	secret := randKey[:concat] + strings.ToUpper(_nip) + randKey[concat:]
+	// Set Secret Key Token
+	accessToken, err := accessTokenSign.SignedString([]byte(secret))
+	if err != nil {
+		return token, metadata, errors.Wrap(err, "[SERVICE][Login]")
+	}
+
+	refreshToken, err := refreshTokenSign.SignedString([]byte(secret))
+	if err != nil {
+		return token, metadata, errors.Wrap(err, "[SERVICE][Login]")
+	}
+
+	user.LastLoginHost = _host
+	err = s.core.UpdateLastLogin(ctx, user)
+	if err != nil {
+		return token, metadata, errors.Wrap(err, "[SERVICE][Login]")
+	}
+
+	token = auth.Token{
+		AccessToken:         accessToken,
+		RefreshToken:        refreshToken,
+		ExpiresIn:           e.Unix() - t.Unix(),
+		ExpiresAt:           e.Unix(),
+		TokenType:           "Bearer",
+		ForceChangePassword: user.ForceChangePassword,
+	}
+
+	metadata["username"] = user.Name
+	metadata["NIP"] = user.NIP
+	metadata["phonenumber"] = user.PhoneNumber
+	metadata["email"] = user.Email
+
+	s.log.Infof(ctx, "metadata=%+v", metadata)
+	return token, metadata, nil
+}
+
+func (s Service) LoginWithoutPT(ctx context.Context, _nip, _password, _host string) (auth.Token, map[string]interface{}, error) {
+	ctx, span := s.tracer.Start(
+		trace.ContextWithSpanContext(ctx, trace.SpanContextFromContext(ctx)),
+		"LoginWithoutPT",
+		trace.WithSpanKind(trace.SpanKindInternal),
+	)
+	span.SetAttributes(
+		attribute.String("data.nip", _nip),
+		attribute.String("data.host", _host),
+	)
+	defer span.End()
+
+	token := auth.Token{}
+	metadata := make(map[string]interface{})
+
+	password, err := s.core.GetPasswordByNIP(ctx, _nip)
+	if err != nil {
+		return token, metadata, errors.Wrap(err, "[SERVICE][LoginWithoutPT]")
+	}
+
+	user, err := s.core.GetUserByNIP(ctx, _nip)
+	if err != nil {
+		return token, metadata, errors.Wrap(err, "[SERVICE][LoginWithoutPT]")
+	}
+
+	if user.IsActive == "N" {
+		return token, metadata, errors.Wrap(errors.New("user is inactive"), "[SERVICE][LoginWithoutPT]")
+	}
+
+	valid, err := argon2pw.CompareHashWithPassword(password, _password)
+	if err != nil {
+		return token, metadata, errors.Wrap(err, "[SERVICE][LoginWithoutPT]")
+	}
+
+	if !valid {
+		return token, metadata, errors.Wrap(errors.New("invalid password"), "[SERVICE][LoginWithoutPT]")
+	}
+
+	t := time.Now()
+	d := 30 * time.Minute
+	e := t.Add(d)
+
+	userPT, err := s.core.GetUserPTByNIP(ctx, user.NIP)
+	if err != nil {
+		return token, metadata, errors.Wrap(err, "[SERVICE][LoginWithoutPT]")
+	}
+
+	jwtID, err := GenerateNumber(5)
+	if err != nil {
+		return token, metadata, errors.Wrap(err, "[SERVICE][LoginWithoutPT]")
+	}
+
+	// Set Header Token
+	sign := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iss": jwtApplicationName,
+		"sub": _host,
+		"nbf": t.Unix(),
+		"iat": t.Unix(),
+		"exp": e.Unix(),
+		"jti": jwtID,
+		"nip": user.NIP,
+	})
+
+	jwtKeys := strings.Split(os.Getenv("NEW_JWT_KEYS"), ", ")
+	randKey := jwtKeys[rand.Intn(len(jwtKeys))]
+	concat := len(randKey) / 2
+	secret := randKey[:concat] + strings.ToUpper(user.NIP) + randKey[concat:]
+	// Set Secret Key Token
+	accessToken, err := sign.SignedString([]byte(secret))
+	if err != nil {
+		return token, metadata, errors.Wrap(err, "[SERVICE][LoginWithoutPT]")
+	}
+
+	user.LastLoginHost = _host
+	err = s.core.UpdateLastLogin(ctx, user)
+	if err != nil {
+		return token, metadata, errors.Wrap(err, "[SERVICE][LoginWithoutPT]")
+	}
+
+	token = auth.Token{
+		AccessToken:         accessToken,
+		ExpiresIn:           e.Unix() - t.Unix(),
+		ExpiresAt:           e.Unix(),
+		TokenType:           "Bearer",
+		ForceChangePassword: user.ForceChangePassword,
+	}
+
+	metadata["username"] = user.Name
+	metadata["NIP"] = user.NIP
+	metadata["phonenumber"] = user.PhoneNumber
+	metadata["email"] = user.Email
+	metadata["pt"] = userPT
+
+	s.log.Infof(ctx, "metadata=%+v", metadata)
+	return token, metadata, nil
+}
+
+func (s Service) GetAccessList(ctx context.Context, _pt, _appID int, _nip, _token string) (auth.Token, map[string][]string, error) {
+	ctx, span := s.tracer.Start(
+		trace.ContextWithSpanContext(ctx, trace.SpanContextFromContext(ctx)),
+		"GetAccessList",
+		trace.WithSpanKind(trace.SpanKindInternal),
+	)
+	span.SetAttributes(
+		attribute.String("data.nip", _nip),
+		attribute.String("data.token", _token),
+		attribute.Int("data.pt", _pt),
+		attribute.Int("data.appID", _appID),
+	)
+	defer span.End()
+
+	var (
+		newToken auth.Token
+		jwtToken *jwt.Token
+		err      error
+	)
+
+	jwtKeys := strings.Split(os.Getenv("NEW_JWT_KEYS"), ", ")
+	accessList := make(map[string][]string)
+	// Token Parsing
+	for i := 0; i < len(jwtKeys); i++ {
+		jwtToken, err = jwt.Parse(_token, func(token *jwt.Token) (interface{}, error) {
+			if method, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, errors.New("Signing method does not match")
+			} else if method != jwt.SigningMethodHS256 {
+				return nil, errors.New("Signing method does not match")
+			}
+
+			key := jwtKeys[i]
+			concat := len(key) / 2
+			secret := key[:concat] + strings.ToUpper(_nip) + key[concat:]
+			return []byte(secret), nil
+		})
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return newToken, accessList, errors.Wrap(err, "[SERVICE][GetAccessList] 401 Unauthorized")
+	}
+
+	// Check Token
+	claims, ok := jwtToken.Claims.(jwt.MapClaims)
+	if !ok || !jwtToken.Valid {
+		return newToken, accessList, errors.Wrap(err, "[SERVICE][GetAccessList] 401 Unauthorized")
+	}
+
+	tokenNIP, nipOK := claims["nip"]
+	if !nipOK {
+		return newToken, accessList, errors.New("[SERVICE][GetAccessList] 401 Unauthorized")
+	}
+
+	if !strings.EqualFold(tokenNIP.(string), _nip) {
+		return newToken, accessList, errors.New("[SERVICE][GetAccessList] Invalid Token")
+	}
+
+	userRole, err := s.core.GetUserRoleByApp(ctx, _pt, _appID, _nip)
+	if err != nil {
+		return newToken, accessList, errors.Wrap(err, "[SERVICE][GetAccessList]")
+	}
+
+	if len(userRole) <= 0 {
+		return newToken, accessList, errors.New("[SERVICE][GetAccessList]: user doesn't has role in this app")
+	}
+
+	var listRoleID []int
+	for _, item := range userRole {
+		listRoleID = append(listRoleID, item.RoleID)
+	}
+
+	accessList, err = s.core.GetAccessListByAppUser(ctx, _nip, _pt, _appID, listRoleID)
+	if err != nil {
+		return newToken, accessList, errors.Wrap(err, "[SERVICE][GetAccessList]")
+	}
+
+	t := time.Now()
+	d := 12 * time.Hour
+	e := t.Add(d)
+
+	jwtID, err := GenerateNumber(5)
+	if err != nil {
+		return newToken, accessList, errors.Wrap(err, "[SERVICE][GetAccessList]")
+	}
+
+	// Set Header Token
+	accessTokenSign := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iss":  jwtApplicationName,
+		"app":  _appID,
+		"nbf":  t.Unix(),
+		"iat":  t.Unix(),
+		"exp":  e.Unix(),
+		"jti":  jwtID,
+		"pt":   _pt,
+		"type": "AT",
+	})
+
+	refreshTokenSign := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iss":  jwtApplicationName,
+		"app":  _appID,
+		"nbf":  t.Unix(),
+		"iat":  t.Unix(),
+		"exp":  t.Add(72 * time.Hour).Unix(),
+		"jti":  jwtID,
+		"pt":   _pt,
+		"type": "RT",
+	})
+
+	randKey := jwtKeys[rand.Intn(len(jwtKeys))]
+	concat := len(randKey) / 4
+	secret := randKey[:concat] + strings.ToUpper(_nip) + randKey[concat:]
+	// Set Secret Key Token
+	accessToken, err := accessTokenSign.SignedString([]byte(secret))
+	if err != nil {
+		return newToken, accessList, errors.Wrap(err, "[SERVICE][GetAccessList]")
+	}
+
+	refreshToken, err := refreshTokenSign.SignedString([]byte(secret))
+	if err != nil {
+		return newToken, accessList, errors.Wrap(err, "[SERVICE][GetAccessList]")
+	}
+
+	newToken = auth.Token{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ExpiresIn:    e.Unix() - t.Unix(),
+		ExpiresAt:    e.Unix(),
+		TokenType:    "Bearer",
+	}
+
+	return newToken, accessList, err
+}
+
+func (s Service) Authorization(ctx context.Context, nip, token, endpoint, method string) error {
+	ctx, span := s.tracer.Start(
+		trace.ContextWithSpanContext(ctx, trace.SpanContextFromContext(ctx)),
+		"Authorization",
+		trace.WithSpanKind(trace.SpanKindInternal),
+	)
+	span.SetAttributes(
+		attribute.String("data.nip", nip),
+		attribute.String("data.token", token),
+		attribute.String("data.endpoint", endpoint),
+		attribute.String("data.method", method),
+	)
+	defer span.End()
+
+	var (
+		jwtToken   *jwt.Token
+		err        error
+		authorized bool
+	)
+
+	jwtKeys := strings.Split(os.Getenv("NEW_JWT_KEYS"), ", ")
+
+	for i := 0; i < len(jwtKeys); i++ {
+		jwtToken, err = jwt.Parse(token, func(_token *jwt.Token) (interface{}, error) {
+			if method, ok := _token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("signing method invalid - HMAC")
+			} else if method != jwt.SigningMethodHS256 {
+				return nil, fmt.Errorf("signing method invalid - HS256")
+			}
+
+			key := jwtKeys[i]
+			concat := len(key) / 4
+			secret := key[:concat] + strings.ToUpper(nip) + key[concat:]
+			return []byte(secret), nil
+		})
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return errors.New("[SERVICE][Authorization] 401 Unauthorized")
+	}
+
+	claims, ok := jwtToken.Claims.(jwt.MapClaims)
+	if !ok || !jwtToken.Valid {
+		return errors.New("[SERVICE][Authorization] 401 Unauthorized")
+	}
+
+	if err = claims.Valid(); err != nil {
+		return errors.New("[SERVICE][Authorization] Token Expired")
+	}
+
+	tokenType, tokenTypeOK := claims["type"]
+	ptID, ptOK := claims["pt"]
+	if !tokenTypeOK || !ptOK {
+		return errors.New("[SERVICE][Authorization] 401 Unauthorized")
+	}
+
+	if tokenType.(string) != "AT" {
+		return errors.New("[SERVICE][Authorization] 401 Unauthorized")
+	}
+	pt := strconv.Itoa(int(ptID.(float64)))
+
+	log.Printf("Request: %s %s %s %s", strings.ToUpper(nip), pt, endpoint, method)
+	authorized, reason, err := s.authEnforcer.EnforceEx(strings.ToUpper(nip), pt, endpoint, method)
+	if err != nil {
+		return errors.Wrap(errors.New("Unauthorized"), "[Policy]")
+	}
+	log.Printf("Policy: %v", reason)
+
+	if !authorized {
+		return errors.New("Unauthorized")
+	}
+
+	return err
+}
+
+func (s Service) RefreshAccessToken(ctx context.Context, nip, refreshToken string) (auth.Token, error) {
+	ctx, span := s.tracer.Start(
+		trace.ContextWithSpanContext(ctx, trace.SpanContextFromContext(ctx)),
+		"RefreshAccessToken",
+		trace.WithSpanKind(trace.SpanKindInternal),
+	)
+	span.SetAttributes(
+		attribute.String("data.nip", nip),
+		attribute.String("data.refreshToken", refreshToken),
+	)
+	defer span.End()
+
+	var (
+		newToken auth.Token
+		jwtToken *jwt.Token
+		err      error
+	)
+
+	jwtKeys := strings.Split(os.Getenv("NEW_JWT_KEYS"), ", ")
+
+	for i := 0; i < len(jwtKeys); i++ {
+		jwtToken, err = jwt.Parse(refreshToken, func(_token *jwt.Token) (interface{}, error) {
+			if method, ok := _token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("signing method invalid - HMAC")
+			} else if method != jwt.SigningMethodHS256 {
+				return nil, fmt.Errorf("signing method invalid - HS256")
+			}
+
+			key := jwtKeys[i]
+			concat := len(key) / 4
+			secret := key[:concat] + strings.ToUpper(nip) + key[concat:]
+			return []byte(secret), nil
+		})
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return newToken, errors.New("[SERVICE][RefreshAccessToken] 401 Unauthorized")
+	}
+
+	claims, ok := jwtToken.Claims.(jwt.MapClaims)
+	if !ok || !jwtToken.Valid {
+		return newToken, errors.New("[SERVICE][RefreshAccessToken] 401 Unauthorized")
+	}
+
+	if err = claims.Valid(); err != nil {
+		return newToken, errors.New("[SERVICE][RefreshAccessToken] Token Expired")
+	}
+
+	tokenType, tokenTypeOK := claims["type"]; 
+	ptID, ptOK := claims["pt"]; 
+	appID, appOK := claims["app"]; 
+	if !tokenTypeOK || !ptOK || !appOK {
+		return newToken, errors.New("[SERVICE][RefreshAccessToken] 401 Unauthorized")
+	}
+
+	if tokenType.(string) != "RT" {
+		return newToken, errors.New("[SERVICE][RefreshAccessToken] 401 Unauthorized")
+	}
+
+	pt := int(ptID.(float64))
+
+	t := time.Now()
+	d := 12 * time.Hour
+	e := t.Add(d)
+
+	jwtID, err := GenerateNumber(5)
+	if err != nil {
+		return newToken, errors.Wrap(err, "[SERVICE][RefreshAccessToken]")
+	}
+
+	accessTokenSign := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"iss":  jwtApplicationName,
+		"app":  int(appID.(float64)),
+		"nbf":  t.Unix(),
+		"iat":  t.Unix(),
+		"exp":  e.Unix(),
+		"jti":  jwtID,
+		"pt":   pt,
+		"type": "AT",
+	})
+
+	randKey := jwtKeys[rand.Intn(len(jwtKeys))]
+	concat := len(randKey) / 4
+	secret := randKey[:concat] + strings.ToUpper(nip) + randKey[concat:]
+	// Set Secret Key Token
+	accessToken, err := accessTokenSign.SignedString([]byte(secret))
+	if err != nil {
+		return newToken, errors.Wrap(err, "[SERVICE][RefreshAccessToken]")
+	}
+
+	newToken = auth.Token{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ExpiresIn:    e.Unix() - t.Unix(),
+		ExpiresAt:    e.Unix(),
+		TokenType:    "Bearer",
+	}
+
+	return newToken, err
+}
+
+func (s Service) RotateJWTKeys(ctx context.Context) error {
+	ctx, span := s.tracer.Start(
+		trace.ContextWithSpanContext(ctx, trace.SpanContextFromContext(ctx)),
+		"RotateJWTKeys",
+		trace.WithSpanKind(trace.SpanKindInternal),
+	)
+	defer span.End()
+
+	var (
+		err error
+	)
+
+	newKeys, err := GenerateJWTKeys(3, 32)
+	if err != nil {
+		return errors.Wrap(err, "[SERVICE][RotateJWTKeys][GenerateJWTKeys]")
+	}
+
+	currentNewKeys := strings.Split(os.Getenv("NEW_JWT_KEYS"), ", ")
+	currentOldKeys := strings.Split(os.Getenv("OLD_JWT_KEYS"), ", ")
+
+	err = os.Setenv("NEW_JWT_KEYS", strings.Join(newKeys, ", "))
+	if err != nil {
+		return errors.Wrap(err, "[SERVICE][RotateJWTKeys][ENV]")
+	}
+
+	err = os.Setenv("OLD_JWT_KEYS", strings.Join(currentNewKeys, ", "))
+	if err != nil {
+		return errors.Wrap(err, "[SERVICE][RotateJWTKeys][ENV]")
+	}
+
+	err = s.data.DeleteJWTKeys(ctx, currentOldKeys)
+	if err != nil {
+		return errors.Wrap(err, "[SERVICE][RotateJWTKeys][DeleteJWTKeys]")
+	}
+
+	err = s.data.RotateJWTKeys(ctx, append(newKeys, currentNewKeys...))
+	if err != nil {
+		return errors.Wrap(err, "[SERVICE][RotateJWTKeys][RotateJWTKeys]")
+	}
+
+	return err
+}
+
+func GenerateJWTKeys(nKeys, byteLen int) ([]string, error) {
+	var (
+		jwtKeys []string
+		err     error
+	)
+
+	for i := 0; i < nKeys; i++ {
+		b, err := GenerateRandomBytes(byteLen)
+		if err != nil {
+			return jwtKeys, errors.Wrap(err, "[SERVICE][GenerateJWTKeys]")
+		}
+
+		jwtKeys = append(jwtKeys, base64.URLEncoding.EncodeToString(b))
+	}
+
+	return jwtKeys, err
+}
+
+func GenerateRandomBytes(n int) ([]byte, error) {
+	b := make([]byte, n)
+	_, err := randCrypto.Read(b)
+	// Note that err == nil only if we read len(b) bytes.
+	if err != nil {
+		return nil, err
+	}
+
+	return b, nil
+}
+
+func (s Service) CheckPermission(ctx context.Context, req auth.AuthRequest) error {
+	ctx, span := s.tracer.Start(
+		trace.ContextWithSpanContext(ctx, trace.SpanContextFromContext(ctx)),
+		"CheckPermission",
+		trace.WithSpanKind(trace.SpanKindInternal),
+	)
+	defer span.End()
+
+	var (
+		err        error
+		authorized bool
+	)
+
+	log.Printf("Request: %s %s %s %s", strings.ToUpper(req.NIP), strconv.Itoa(req.PT), req.PathURL, req.Method)
+	authorized, reason, err := s.authEnforcer.EnforceEx(strings.ToUpper(req.NIP), strconv.Itoa(req.PT), req.PathURL, req.Method)
+	if err != nil {
+		return errors.Wrap(errors.New("Unauthorized"), "[Policy]")
+	}
+
+	log.Printf("reason: %v", reason)
+	if !authorized {
+		return errors.New("Unauthorized")
+	}
+
+	return err
+}
+
+func KeyMatchCore(key1 string, key2 string) bool {
+	// Parse key1 and key2 as URLs to handle query parameters
+	u1, err1 := url.Parse(key1)
+	u2, err2 := url.Parse(key2)
+
+	if err1 != nil || err2 != nil {
+		return false
+	}
+
+	// Compare the paths without query parameters
+	path1 := strings.TrimSuffix(u1.Path, "/")
+	path2 := strings.TrimSuffix(u2.Path, "/")
+
+	path2 = strings.Replace(path2, "/*", "/.*", -1)
+
+	re := regexp.MustCompile(`\{[^/]+\}`)
+	path2 = re.ReplaceAllString(path2, "$1[^/]+$2")
+
+	if !RegexMatch(path1, "^"+path2+"$") {
+		return false
+	}
+
+	// Compare query parameters
+	var (
+		query1, query2 url.Values
+		lenQ1, lenQ2   int
+	)
+	lenQ1 = len(u1.Query())
+	lenQ2 = len(u2.Query())
+
+	switch {
+	case lenQ2 == 0 && lenQ1 == 0:
+		return true
+	default:
+		query1 = u1.Query()
+		query2 = u2.Query()
+	}
+
+	for key, value := range query2 {
+
+		var values1 []string
+		if val, ok := query1[key]; !ok {
+			return false
+		} else {
+			values1 = val
+		}
+
+		for i, v := range value {
+			if strings.HasPrefix(v, "{") && strings.HasSuffix(v, "}") {
+				continue
+			}
+
+			if v != values1[i] {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+// RegexMatch determines whether key1 matches the pattern of key2 in regular expression.
+func RegexMatch(key1 string, key2 string) bool {
+	res, err := regexp.MatchString(key2, key1)
+	if err != nil {
+		panic(err)
+	}
+	return res
+}
+
+func KeyMatchFunc(args ...interface{}) (interface{}, error) {
+	name1 := args[0].(string)
+	name2 := args[1].(string)
+
+	return (bool)(KeyMatchCore(name1, name2)), nil
+}
