@@ -78,6 +78,11 @@ type BeegoGoldGymHandler interface {
 	DeleteGoldGymBeego(ctx *beegoCtx.Context)
 }
 
+type ElasticHandler interface {
+	GetElasticGin(c *gin.Context)
+	PostElasticGin(c *gin.Context)
+}
+
 // Server ...
 type Server struct {
 	Goldgym      GoldGymHandler
@@ -86,6 +91,7 @@ type Server struct {
 	EchoGoldGym  EchoGoldGymHandler
 	MuxGoldGym   MuxGoldGymHandler
 	BeegoGoldGym BeegoGoldGymHandler
+	Elastic      ElasticHandler
 
 	engine     *gin.Engine
 	echoEngine *echo.Echo

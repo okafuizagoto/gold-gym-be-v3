@@ -133,6 +133,13 @@ func (s *Server) Handler() *gin.Engine {
 		goldgym.POST("/login", s.Auth.LoginUser) // POST
 	}
 
+	// Elastic routes
+	elastic := router.Group("/v2/elastic")
+	{
+		elastic.GET("", s.Elastic.GetElasticGin)   // GET: search or getbyid
+		elastic.POST("", s.Elastic.PostElasticGin) // POST: index document
+	}
+
 	// Swagger route
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 

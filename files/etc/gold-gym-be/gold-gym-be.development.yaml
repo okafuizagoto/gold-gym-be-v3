@@ -32,3 +32,8 @@ kafka:
   topics:
     local_to_prod: "mysql_server.u868654674_gold_gym_bez.data_peserta"
     prod_to_local: "mysql_server.u868654674_gold_gym_bez.data_peserta"
+elasticsearch:
+  addresses:
+    - "http://localhost:9200"
+  username: ""
+  password: ""

@@ -12,14 +12,22 @@ type KafkaConfig struct {
 type (
 	// Config ...
 	Config struct {
-		Server     ServerConfig   `yaml:"server"`
-		Database   DatabaseConfig `yaml:"database"`
-		API        APIConfig      `yaml:"api"`
-		Credential Credential     `yaml:"credential"`
-		Firebase   FirebaseConfig `yaml:"firebase"`
-		Swagger    SwaggerConfig  `yaml:"swagger"`
-		Redis      Redis          `yaml:"redis"`
-		Kafka      KafkaConfig    `yaml:"kafka"`
+		Server        ServerConfig        `yaml:"server"`
+		Database      DatabaseConfig      `yaml:"database"`
+		API           APIConfig           `yaml:"api"`
+		Credential    Credential          `yaml:"credential"`
+		Firebase      FirebaseConfig      `yaml:"firebase"`
+		Swagger       SwaggerConfig       `yaml:"swagger"`
+		Redis         Redis               `yaml:"redis"`
+		Kafka         KafkaConfig         `yaml:"kafka"`
+		Elasticsearch ElasticsearchConfig `yaml:"elasticsearch"`
+	}
+
+	// ElasticsearchConfig ...
+	ElasticsearchConfig struct {
+		Addresses []string `yaml:"addresses"`
+		Username  string   `yaml:"username"`
+		Password  string   `yaml:"password"`
 	}
 
 	// ServerConfig ...

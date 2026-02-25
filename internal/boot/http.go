@@ -54,6 +54,10 @@ import (
 
 	beegoHandler "gold-gym-be/internal/delivery/http/beego"
 
+	elasticData    "gold-gym-be/internal/data/elastic"
+	elasticHandler "gold-gym-be/internal/delivery/http/elastic"
+	elasticService "gold-gym-be/internal/service/elastic"
+
 	middlewareHandler "gold-gym-be/internal/delivery/http/middleware"
 	middlewareService "gold-gym-be/internal/service/middleware"
 
@@ -65,6 +69,7 @@ import (
 	pb "gold-gym-be/proto"
 	"net"
 
+	es "github.com/elastic/go-elasticsearch/v8"
 	"google.golang.org/grpc"
 	// goldgymStockData "gold-gym-be/internal/data/stock"
 	// pushNotifData "gold-gym-be/internal/data/pushnotif"
@@ -178,6 +183,19 @@ func HTTP() error {
 	muxH := muxHandler.New(ss, ssst, tracer, zlogger)
 
 	beegoH := beegoHandler.New(ss, ssst, tracer, zlogger)
+
+	// Elasticsearch
+	esClient, err := es.NewClient(es.Config{
+		Addresses: cfg.Elasticsearch.Addresses,
+		Username:  cfg.Elasticsearch.Username,
+		Password:  cfg.Elasticsearch.Password,
+	})
+	if err != nil {
+		log.Fatalf("[ES] Failed to create Elasticsearch client: %v", err)
+	}
+	sed := elasticData.New(esClient, tracer, zlogger)
+	ses := elasticService.New(sed, tracer, zlogger)
+	seh := elasticHandler.New(ses, tracer, zlogger)
 
 	//middleware
 	ms := middlewareService.New(sd, tracer, zlogger)
@@ -300,6 +318,7 @@ func HTTP() error {
 		EchoGoldGym:  echoH,
 		MuxGoldGym:   muxH,
 		BeegoGoldGym: beegoH,
+		Elastic:      seh,
 		Logger:       zlogger,
 		Config:       cfg,
 		// PushNotification: spnh,
