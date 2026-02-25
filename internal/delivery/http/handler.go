@@ -20,6 +20,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 	echoMiddleware "github.com/labstack/echo/v4/middleware"
+
+	beegoWeb "github.com/beego/beego/v2/server/web"
 )
 
 // // Handler will initialize mux router and register handler
@@ -186,6 +188,20 @@ func (s *Server) MuxHandler() *mux.Router {
 
 	router.PathPrefix("/swagger").Handler(httpSwagger.WrapHandler)
 	return r
+}
+
+func (s *Server) BeegoHandler() *beegoWeb.HttpServer {
+	app := beegoWeb.NewHttpSever()
+
+	app.Cfg.WebConfig.AutoRender = false
+	app.Cfg.Log.AccessLogs = false
+
+	app.Get("/beego-gym/v2/userdata", s.BeegoGoldGym.GetGoldGymBeego)
+	app.Post("/beego-gym/v2/userdata", s.BeegoGoldGym.InsertGoldGymBeego)
+	app.Put("/beego-gym/v2/userdata", s.BeegoGoldGym.UpdateGoldGymBeego)
+	app.Delete("/beego-gym/v2/userdata", s.BeegoGoldGym.DeleteGoldGymBeego)
+
+	return app
 }
 
 func defaultHandlerMux(w http.ResponseWriter, r *http.Request) {

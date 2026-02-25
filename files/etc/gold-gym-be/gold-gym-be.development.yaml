@@ -2,6 +2,7 @@ server:
   port: "8085"
   echo_port: "8086"
   mux_port: "8087"
+  beego_port: "8088"
   grpc_port: "50051"
   env: "local"
 database:

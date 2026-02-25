@@ -11,6 +11,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/labstack/echo/v4"
 	"github.com/rs/cors"
+
+	beegoCtx "github.com/beego/beego/v2/server/web/context"
+	beegoWeb "github.com/beego/beego/v2/server/web"
 )
 
 // GoldGymHandler ...
@@ -68,16 +71,25 @@ type MuxGoldGymHandler interface {
 	UpdateGoldGymMux(w http.ResponseWriter, r *http.Request)
 }
 
+type BeegoGoldGymHandler interface {
+	GetGoldGymBeego(ctx *beegoCtx.Context)
+	InsertGoldGymBeego(ctx *beegoCtx.Context)
+	UpdateGoldGymBeego(ctx *beegoCtx.Context)
+	DeleteGoldGymBeego(ctx *beegoCtx.Context)
+}
+
 // Server ...
 type Server struct {
-	Goldgym     GoldGymHandler
-	Auth        AuthHandler
-	Middleware  MiddlewareHandler
-	EchoGoldGym EchoGoldGymHandler
-	MuxGoldGym  MuxGoldGymHandler
+	Goldgym      GoldGymHandler
+	Auth         AuthHandler
+	Middleware   MiddlewareHandler
+	EchoGoldGym  EchoGoldGymHandler
+	MuxGoldGym   MuxGoldGymHandler
+	BeegoGoldGym BeegoGoldGymHandler
 
 	engine     *gin.Engine
 	echoEngine *echo.Echo
+	beegoApp   *beegoWeb.HttpServer
 	server     *http.Server
 
 	Health HealthHandler
@@ -116,6 +128,12 @@ func (s *Server) ServeEcho(port string) error {
 func (s *Server) ServeMux(port string) error {
 	handler := cors.AllowAll().Handler(s.Handler())
 	return grace.Serve(port, handler)
+}
+
+func (s *Server) ServeBeego(port string) error {
+	s.beegoApp = s.BeegoHandler()
+	s.beegoApp.Run(":" + port)
+	return nil
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {

@@ -24,11 +24,12 @@ type (
 
 	// ServerConfig ...
 	ServerConfig struct {
-		Port     string `yaml:"port"`
-		GrpcPort string `yaml:"grpc_port"`
-		EchoPort string `yaml:"echo_port"`
-		MuxPort  string `yaml:"mux_port"`
-		Env      string `yaml:"env"`
+		Port      string `yaml:"port"`
+		GrpcPort  string `yaml:"grpc_port"`
+		EchoPort  string `yaml:"echo_port"`
+		MuxPort   string `yaml:"mux_port"`
+		BeegoPort string `yaml:"beego_port"`
+		Env       string `yaml:"env"`
 	}
 
 	// DatabaseConfig ...

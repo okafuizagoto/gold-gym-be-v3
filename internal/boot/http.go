@@ -52,6 +52,8 @@ import (
 
 	muxHandler "gold-gym-be/internal/delivery/http/mux"
 
+	beegoHandler "gold-gym-be/internal/delivery/http/beego"
+
 	middlewareHandler "gold-gym-be/internal/delivery/http/middleware"
 	middlewareService "gold-gym-be/internal/service/middleware"
 
@@ -175,6 +177,8 @@ func HTTP() error {
 
 	muxH := muxHandler.New(ss, ssst, tracer, zlogger)
 
+	beegoH := beegoHandler.New(ss, ssst, tracer, zlogger)
+
 	//middleware
 	ms := middlewareService.New(sd, tracer, zlogger)
 	mh := middlewareHandler.New(ms, ss, ssst, tracer, zlogger)
@@ -289,14 +293,15 @@ func HTTP() error {
 	defer stop()
 
 	s := goldgymServer.Server{
-		Goldgym:     sh,
-		Auth:        sha,
-		Middleware:  mh,
-		Health:      hh,
-		EchoGoldGym: echoH,
-		MuxGoldGym: muxH,
-		Logger:      zlogger,
-		Config:      cfg,
+		Goldgym:      sh,
+		Auth:         sha,
+		Middleware:   mh,
+		Health:       hh,
+		EchoGoldGym:  echoH,
+		MuxGoldGym:   muxH,
+		BeegoGoldGym: beegoH,
+		Logger:       zlogger,
+		Config:       cfg,
 		// PushNotification: spnh,
 	}
 
@@ -323,6 +328,12 @@ func HTTP() error {
 		if err := s.ServeEcho(cfg.Server.MuxPort); err != nil {
 			log.Fatalf("[HTTP/Mux] serve error: %v", err)
 		}
+	}()
+
+	// Start Beego HTTP server on port 8088
+	go func() {
+		log.Printf("[HTTP/Beego] Starting Beego server on port %s", cfg.Server.BeegoPort)
+		s.ServeBeego(cfg.Server.BeegoPort)
 	}()
 
 	// Start gRPC server
