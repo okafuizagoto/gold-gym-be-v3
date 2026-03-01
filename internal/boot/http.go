@@ -54,6 +54,8 @@ import (
 
 	beegoHandler "gold-gym-be/internal/delivery/http/beego"
 
+	fiberHandler "gold-gym-be/internal/delivery/http/fiber"
+
 	elasticData    "gold-gym-be/internal/data/elastic"
 	elasticHandler "gold-gym-be/internal/delivery/http/elastic"
 	elasticService "gold-gym-be/internal/service/elastic"
@@ -183,6 +185,8 @@ func HTTP() error {
 	muxH := muxHandler.New(ss, ssst, tracer, zlogger)
 
 	beegoH := beegoHandler.New(ss, ssst, tracer, zlogger)
+
+	fiberH := fiberHandler.New(ss, ssst, tracer, zlogger)
 
 	// Elasticsearch
 	esClient, err := es.NewClient(es.Config{
@@ -318,6 +322,7 @@ func HTTP() error {
 		EchoGoldGym:  echoH,
 		MuxGoldGym:   muxH,
 		BeegoGoldGym: beegoH,
+		FiberGoldGym: fiberH,
 		Elastic:      seh,
 		Logger:       zlogger,
 		Config:       cfg,
@@ -353,6 +358,14 @@ func HTTP() error {
 	go func() {
 		log.Printf("[HTTP/Beego] Starting Beego server on port %s", cfg.Server.BeegoPort)
 		s.ServeBeego(cfg.Server.BeegoPort)
+	}()
+
+	// Start Fiber HTTP server on port 8089
+	go func() {
+		log.Printf("[HTTP/Fiber] Starting Fiber server on port %s", cfg.Server.FiberPort)
+		if err := s.ServeFiber(cfg.Server.FiberPort); err != nil {
+			log.Fatalf("[HTTP/Fiber] serve error: %v", err)
+		}
 	}()
 
 	// Start gRPC server

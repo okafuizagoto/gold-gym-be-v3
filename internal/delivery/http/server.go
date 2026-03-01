@@ -9,6 +9,7 @@ import (
 	jaegerLog "gold-gym-be/pkg/log"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gofiber/fiber/v2"
 	"github.com/labstack/echo/v4"
 	"github.com/rs/cors"
 
@@ -83,6 +84,13 @@ type ElasticHandler interface {
 	PostElasticGin(c *gin.Context)
 }
 
+type FiberGoldGymHandler interface {
+	GetGoldGymFiber(c *fiber.Ctx) error
+	InsertGoldGymFiber(c *fiber.Ctx) error
+	UpdateGoldGymFiber(c *fiber.Ctx) error
+	DeleteGoldGymFiber(c *fiber.Ctx) error
+}
+
 // Server ...
 type Server struct {
 	Goldgym      GoldGymHandler
@@ -92,10 +100,12 @@ type Server struct {
 	MuxGoldGym   MuxGoldGymHandler
 	BeegoGoldGym BeegoGoldGymHandler
 	Elastic      ElasticHandler
+	FiberGoldGym FiberGoldGymHandler
 
 	engine     *gin.Engine
 	echoEngine *echo.Echo
 	beegoApp   *beegoWeb.HttpServer
+	fiberApp   *fiber.App
 	server     *http.Server
 
 	Health HealthHandler
@@ -142,6 +152,11 @@ func (s *Server) ServeBeego(port string) error {
 	return nil
 }
 
+func (s *Server) ServeFiber(port string) error {
+	s.fiberApp = s.FiberHandler()
+	return s.fiberApp.Listen(":" + port)
+}
+
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.server != nil {
 		if err := s.server.Shutdown(ctx); err != nil {
@@ -151,6 +166,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	if s.echoEngine != nil {
 		if err := s.echoEngine.Shutdown(ctx); err != nil {
+			return err
+		}
+	}
+
+	if s.fiberApp != nil {
+		if err := s.fiberApp.Shutdown(); err != nil {
 			return err
 		}
 	}

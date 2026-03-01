@@ -18,6 +18,10 @@ import (
 
 	httpSwagger "github.com/swaggo/http-swagger"
 
+	"github.com/gofiber/fiber/v2"
+	fiberLogger "github.com/gofiber/fiber/v2/middleware/logger"
+	fiberRecover "github.com/gofiber/fiber/v2/middleware/recover"
+
 	"github.com/labstack/echo/v4"
 	echoMiddleware "github.com/labstack/echo/v4/middleware"
 
@@ -195,6 +199,22 @@ func (s *Server) MuxHandler() *mux.Router {
 
 	router.PathPrefix("/swagger").Handler(httpSwagger.WrapHandler)
 	return r
+}
+
+func (s *Server) FiberHandler() *fiber.App {
+	app := fiber.New()
+
+	app.Use(fiberLogger.New())
+	app.Use(fiberRecover.New())
+
+	fiberGym := app.Group("/fiber-gym")
+	fiberUserdata := fiberGym.Group("/v2/userdata")
+	fiberUserdata.Get("", s.FiberGoldGym.GetGoldGymFiber)
+	fiberUserdata.Post("", s.FiberGoldGym.InsertGoldGymFiber)
+	fiberUserdata.Put("", s.FiberGoldGym.UpdateGoldGymFiber)
+	fiberUserdata.Delete("", s.FiberGoldGym.DeleteGoldGymFiber)
+
+	return app
 }
 
 func (s *Server) BeegoHandler() *beegoWeb.HttpServer {

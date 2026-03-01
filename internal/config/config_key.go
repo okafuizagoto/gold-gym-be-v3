@@ -37,6 +37,7 @@ type (
 		EchoPort  string `yaml:"echo_port"`
 		MuxPort   string `yaml:"mux_port"`
 		BeegoPort string `yaml:"beego_port"`
+		FiberPort string `yaml:"fiber_port"`
 		Env       string `yaml:"env"`
 	}
 
