@@ -4,7 +4,7 @@ GRPC = http://localhost:50051 -> proto/gold_gym.proto
 
 - using GORM, SQLX, GIN, GRPC, ECHO, MUX (Framework can choose by deleting unused framework)
 
-https://github.com/okafuizagoto/gold-gym-be-v2-portfolio
+https://github.com/okafuizagoto/gold-gym-be-v2-portfolio \n
 URL (gold-gym-be-v2-portfolio) :
 - staging-api.okejual.com
 - api.okejual.com
